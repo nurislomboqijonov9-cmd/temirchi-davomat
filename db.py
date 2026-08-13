@@ -30,8 +30,34 @@ def init_db():
         vaqt TEXT,                               -- Toshkent ISO (naive)
         ip TEXT, raw TEXT, created TEXT)""")
     con.execute("CREATE INDEX IF NOT EXISTS ix_hod ON hodisalar(vaqt)")
+    con.execute("""CREATE TABLE IF NOT EXISTS boshliqlar(
+        tg_id INTEGER PRIMARY KEY, ism TEXT, created TEXT)""")
     con.commit()
     con.close()
+
+
+def boshliq_qosh(tg_id, ism=None):
+    con = _con()
+    con.execute("INSERT OR REPLACE INTO boshliqlar(tg_id,ism,created) VALUES(?,?,?)",
+                (int(tg_id), (ism or "").strip() or None, now_tk().isoformat()))
+    con.commit()
+    con.close()
+
+
+def boshliq_ochir(tg_id):
+    con = _con()
+    cur = con.execute("DELETE FROM boshliqlar WHERE tg_id=?", (int(tg_id),))
+    con.commit()
+    n = cur.rowcount
+    con.close()
+    return n
+
+
+def boshliqlar():
+    con = _con()
+    rows = con.execute("SELECT tg_id, ism FROM boshliqlar ORDER BY created").fetchall()
+    con.close()
+    return [dict(r) for r in rows]
 
 
 def _oxirgi_shu(ism, tur, yangi_vaqt, soniya=90):
@@ -123,3 +149,48 @@ def oxirgi_raw(n=10):
                        (n,)).fetchall()
     con.close()
     return [dict(r) for r in rows]
+
+
+def ismlar(kunlar=30):
+    """Oxirgi N kunda uchragan ismlar ro'yxati."""
+    from datetime import timedelta
+    b = (today_tk() - timedelta(days=kunlar)).isoformat()
+    con = _con()
+    rows = con.execute("SELECT DISTINCT ism FROM hodisalar WHERE vaqt>=? ORDER BY ism", (b,)).fetchall()
+    con.close()
+    return [r["ism"] for r in rows]
+
+
+def odam_topilsin(qism):
+    """Ismning bir qismi bo'yicha mos ismlarni topadi."""
+    q = (qism or "").strip().lower()
+    if not q:
+        return []
+    return [i for i in ismlar(60) if q in i.lower()]
+
+
+def odam_tarix(ism, kunlar=7, sana=None):
+    """Bitta odamning oxirgi N kunlik keldi-ketdi tarixi (har kun bo'yicha)."""
+    from datetime import timedelta
+    oxir = sana or today_tk()
+    res = []
+    for i in range(kunlar):
+        d = oxir - timedelta(days=i)
+        hs = [h for h in bugungi(d) if h["ism"].strip().lower() == ism.strip().lower()]
+        if not hs:
+            continue
+        kirs = [h["vaqt"] for h in hs if h["tur"] == "kirish"]
+        chiqs = [h["vaqt"] for h in hs if h["tur"] == "chiqish"]
+        kir = min(kirs) if kirs else None
+        chiq = max(chiqs) if chiqs else None
+        ish = None
+        if kir and chiq:
+            try:
+                mins = (datetime.fromisoformat(chiq) - datetime.fromisoformat(kir)).total_seconds() / 60
+                if mins > 0:
+                    ish = f"{int(mins//60)}s {int(mins%60)}daq"
+            except Exception:
+                pass
+        res.append({"sana": str(d), "kirish": (kir[11:16] if kir else None),
+                    "chiqish": (chiq[11:16] if chiq else None), "ish": ish})
+    return res

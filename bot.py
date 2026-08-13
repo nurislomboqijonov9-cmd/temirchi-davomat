@@ -55,46 +55,115 @@ def _xulosa_matn(sana=None):
 
 
 async def _yubor(app, matn):
+    """Hisobotni owner + barcha boshliqlarga yuboradi."""
+    idlar = _qabul_royxati()
+    for uid in idlar:
+        try:
+            for i in range(0, len(matn), 3500):
+                await app.bot.send_message(uid, matn[i:i+3500], parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            pass
+
+
+def _qabul_royxati():
+    idlar = set()
     if OWNER_ID:
-        for i in range(0, len(matn), 3500):
-            await app.bot.send_message(OWNER_ID, matn[i:i+3500], parse_mode=ParseMode.MARKDOWN)
+        idlar.add(OWNER_ID)
+    for b in db.boshliqlar():
+        idlar.add(int(b["tg_id"]))
+    return idlar
+
+
+def _ruxsat(uid):
+    return uid in _qabul_royxati()
 
 
 # ---------- Buyruqlar ----------
 async def start_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    uid = update.effective_user.id
+    if not _ruxsat(uid):
+        # Boshqa odam — o'z ID sini ko'rsatamiz (egaga berish uchun)
+        await update.message.reply_text(
+            f"👋 Salom! Sizning ID: `{uid}`\n\n"
+            "Bu ID ni rahbaringizga bering — u sizni davomat xabarlariga qo'shadi.",
+            parse_mode=ParseMode.MARKDOWN)
         return
     await update.message.reply_text(
         "👋 *TEMIRCHI — Davomat*\n\n"
         "• /kelish — bugun kim nechada keldi\n"
         "• /ketish — kim nechada ketdi\n"
         "• /hisobot — to'liq: keldi–ketdi (+ ish soati)\n"
-        "• /davomat 18:30 22:30 — oraliq (shu vaqtdagi kirdi/chiqdi)\n"
+        "• /odam Umar — bir odamning 7 kunlik tarixi\n"
+        "• /oy Umar — bir odamning 30 kunlik tarixi\n"
+        "• /davomat 18:30 22:30 — oraliq\n"
         "• /bugun — barcha kirish/chiqishlar\n\n"
+        "👤 *Boshliq qo'shish (faqat ega):*\n"
+        "• /idlar — kimlar xabar oladi\n"
+        "• /idqosh 123456789 Xusan aka — qo'shish\n"
+        "• /idochir 123456789 — o'chirish\n\n"
         "🔔 Avtomat: 11:00 kelish · 21:00 ketish · 22:00 umumiy jadval.",
         parse_mode=ParseMode.MARKDOWN)
 
 
+async def idlar_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    bs = db.boshliqlar()
+    q = [f"👤 *Xabar oladiganlar*\n\n• Ega (siz): `{OWNER_ID}`"]
+    for b in bs:
+        q.append(f"• {b['ism'] or 'Boshliq'}: `{b['tg_id']}`")
+    q.append("\n_Qo'shish:_ `/idqosh 123456789 Ism`\n_O'chirish:_ `/idochir 123456789`")
+    q.append("\n_ID ni bilish: o'sha odam botga /start yozsa, ID chiqadi._")
+    await update.message.reply_text("\n".join(q), parse_mode=ParseMode.MARKDOWN)
+
+
+async def idqosh_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    args = ctx.args or []
+    if not args or not args[0].lstrip("-").isdigit():
+        await update.message.reply_text(
+            "👤 Qo'shish: `/idqosh 123456789 Xusan aka`\n"
+            "_(ID ni bilish: o'sha odam botga /start yozsin.)_", parse_mode=ParseMode.MARKDOWN)
+        return
+    tg = int(args[0])
+    ism = " ".join(args[1:]).strip() or None
+    db.boshliq_qosh(tg, ism)
+    await update.message.reply_text(f"✅ Qo'shildi: {ism or 'Boshliq'} (`{tg}`)\nEndi unga ham davomat xabarlari boradi.",
+                                    parse_mode=ParseMode.MARKDOWN)
+
+
+async def idochir_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    args = ctx.args or []
+    if not args or not args[0].lstrip("-").isdigit():
+        await update.message.reply_text("O'chirish: `/idochir 123456789`", parse_mode=ParseMode.MARKDOWN)
+        return
+    n = db.boshliq_ochir(int(args[0]))
+    await update.message.reply_text("✅ O'chirildi." if n else "❌ Bunday ID yo'q.")
+
+
 async def kelish_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    if not _ruxsat(update.effective_user.id):
         return
     await update.message.reply_text(_kelish_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def ketish_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    if not _ruxsat(update.effective_user.id):
         return
     await update.message.reply_text(_ketish_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def hisobot_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    if not _ruxsat(update.effective_user.id):
         return
     await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def davomat_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    if not _ruxsat(update.effective_user.id):
         return
     args = ctx.args or []
     vaqtlar = [a for a in args if re.match(r'^\d{1,2}:\d{2}$', a)]
@@ -115,8 +184,62 @@ async def davomat_cmd(update, ctx):
     await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
+def _odam_tarix_matn(ism, kunlar):
+    tarix = db.odam_tarix(ism, kunlar)
+    if not tarix:
+        return f"📭 *{ism}* — oxirgi {kunlar} kunda qayd yo'q."
+    oy = ["yan","fev","mar","apr","may","iyn","iyl","avg","sen","okt","noy","dek"]
+    q = [f"👤 *{ism}* — oxirgi {kunlar} kun\n"]
+    kun_soni = 0
+    for t in tarix:
+        try:
+            y, m, dd = t["sana"].split("-")
+            sana_matn = f"{int(dd)}-{oy[int(m)-1]}"
+        except Exception:
+            sana_matn = t["sana"]
+        kir = t["kirish"] or "—"
+        chiq = t["chiqish"] or "—"
+        ish = f"  ·  ⏱ {t['ish']}" if t["ish"] else ""
+        q.append(f"📅 {sana_matn}:  🟢 {kir}  →  🔴 {chiq}{ish}")
+        if t["kirish"]:
+            kun_soni += 1
+    q.append(f"\n📊 Jami *{kun_soni}* kun ishlagan.")
+    return "\n".join(q)
+
+
+async def odam_cmd(update, ctx):
+    if not _ruxsat(update.effective_user.id):
+        return
+    ctx.chat_data["_kunlar"] = 7
+    await _odam_javob(update, ctx, 7)
+
+
+async def oy_cmd(update, ctx):
+    if not _ruxsat(update.effective_user.id):
+        return
+    await _odam_javob(update, ctx, 30)
+
+
+async def _odam_javob(update, ctx, kunlar):
+    ism = " ".join(ctx.args or []).strip()
+    if not ism:
+        ro = db.ismlar(30)
+        matn = "👤 *Kimning davomati?*\n\nMasalan: `/odam Umar`\n\n"
+        if ro:
+            matn += "Ismlar: " + ", ".join(ro)
+        await update.message.reply_text(matn, parse_mode=ParseMode.MARKDOWN)
+        return
+    mos = db.odam_topilsin(ism)
+    if len(mos) > 1 and ism.lower() not in [m.lower() for m in mos]:
+        await update.message.reply_text("👥 Bir nechta mos keldi: " + ", ".join(mos) + "\nAniqroq yozing.",
+                                        parse_mode=ParseMode.MARKDOWN)
+        return
+    aniq = mos[0] if mos else ism
+    await update.message.reply_text(_odam_tarix_matn(aniq, kunlar), parse_mode=ParseMode.MARKDOWN)
+
+
 async def bugun_cmd(update, ctx):
-    if OWNER_ID and update.effective_user.id != OWNER_ID:
+    if not _ruxsat(update.effective_user.id):
         return
     hs = db.bugungi()
     if not hs:
@@ -153,19 +276,25 @@ async def run():
     db.init_db()
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("idlar", idlar_cmd))
+    app.add_handler(CommandHandler("idqosh", idqosh_cmd))
+    app.add_handler(CommandHandler("idochir", idochir_cmd))
     app.add_handler(CommandHandler("kelish", kelish_cmd))
     app.add_handler(CommandHandler("ketish", ketish_cmd))
     app.add_handler(CommandHandler("hisobot", hisobot_cmd))
+    app.add_handler(CommandHandler("odam", odam_cmd))
+    app.add_handler(CommandHandler("oy", oy_cmd))
     app.add_handler(CommandHandler("davomat", davomat_cmd))
     app.add_handler(CommandHandler("bugun", bugun_cmd))
 
     async def xabar_cb(matn):
         # Faqat kech (JONLI_SOAT dan keyin) — kunduzi spam bo'lmasin
-        if OWNER_ID and db.now_tk().hour >= JONLI_SOAT:
-            try:
-                await app.bot.send_message(OWNER_ID, matn, parse_mode=ParseMode.MARKDOWN)
-            except Exception:
-                pass
+        if db.now_tk().hour >= JONLI_SOAT:
+            for uid in _qabul_royxati():
+                try:
+                    await app.bot.send_message(uid, matn, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    pass
 
     webapp = server.make_web_app(xabar_cb)
     runner = web.AppRunner(webapp)
