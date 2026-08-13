@@ -1,3 +1,4 @@
+import os
 import json, re
 from aiohttp import web
 import db
@@ -147,6 +148,22 @@ def make_web_app(xabar_cb=None):
         rows = db.oxirgi_raw(15)
         return web.json_response(rows, headers={"Content-Type": "application/json; charset=utf-8"})
 
+    async def api_tv(request):
+        """TV dashboard uchun — bugungi davomat (kim keldi/ketdi). CORS ochiq."""
+        cors = {"Access-Control-Allow-Origin": "*"}
+        kalit = os.environ.get("TV_KEY")
+        if kalit and request.query.get("k") != kalit:
+            return web.json_response({"xato": "ruxsat yo'q"}, status=403, headers=cors)
+        lst = db.kunlik_xulosa()
+        keldi = sum(1 for o in lst if o["kirish"])
+        ketdi = sum(1 for o in lst if o["chiqish"])
+        ichkarida = sum(1 for o in lst if o["kirish"] and not o["chiqish"])
+        return web.json_response({
+            "sana": str(db.today_tk()),
+            "keldi": keldi, "ketdi": ketdi, "ichkarida": ichkarida,
+            "odamlar": lst,
+        }, headers=cors)
+
     app.router.add_get("/", health)
     app.router.add_get("/event", event)
     app.router.add_post("/event", event)
@@ -155,4 +172,5 @@ def make_web_app(xabar_cb=None):
     app.router.add_get("/chiqish", event)
     app.router.add_post("/chiqish", event)
     app.router.add_get("/raw", raw)
+    app.router.add_get("/api/tv", api_tv)
     return app
