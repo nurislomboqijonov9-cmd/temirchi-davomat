@@ -4,6 +4,10 @@ from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, ContextTypes
 import db, server
+try:
+    import jadval
+except Exception:
+    jadval = None
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("davomat")
@@ -40,18 +44,34 @@ def _ketish_matn(sana=None):
     return "\n".join(q)
 
 
+def _ish_qisqa(ish):
+    """'9s 35daq' -> '9s35'."""
+    if not ish:
+        return "—"
+    return ish.replace(" ", "").replace("daq", "")
+
+
 def _xulosa_matn(sana=None):
     lst = db.kunlik_xulosa(sana)
     if not lst:
         return "📋 Bugun hech kim qayd etilmadi."
     d = str(sana or db.today_tk())[:10]
-    q = [f"📋 *Kunlik davomat* — {d}\n"]
+    # Monospace jadval (ustunlar tekis)
+    satlar = []
+    satlar.append(f"{'Ism':<13}{'Keldi':<7}{'Ketdi':<7}{'Ish':<6}")
+    satlar.append("─" * 32)
     for o in lst:
+        ism = (o["ism"] or "")[:12]
         kir = o["kirish"] or "—"
         chiq = o["chiqish"] or "—"
-        ish = f"  ·  ⏱ {o['ish']}" if o["ish"] else ""
-        q.append(f"• *{o['ism']}*:  🟢 {kir}  →  🔴 {chiq}{ish}")
-    return "\n".join(q)
+        ish = _ish_qisqa(o["ish"])
+        satlar.append(f"{ism:<13}{kir:<7}{chiq:<7}{ish:<6}")
+    keldi = sum(1 for o in lst if o["kirish"])
+    ketdi = sum(1 for o in lst if o["chiqish"])
+    jadval = "\n".join(satlar)
+    return (f"📋 *Kunlik davomat* — {d}\n"
+            f"```\n{jadval}\n```\n"
+            f"🟢 {keldi} keldi · 🔴 {ketdi} ketdi")
 
 
 async def _yubor(app, matn):
@@ -93,6 +113,7 @@ async def start_cmd(update, ctx):
         "• /kelish — bugun kim nechada keldi\n"
         "• /ketish — kim nechada ketdi\n"
         "• /hisobot — to'liq: keldi–ketdi (+ ish soati)\n"
+        "• /jadval — chiroyli rasm jadval 📊\n"
         "• /odam Umar — bir odamning 7 kunlik tarixi\n"
         "• /oy Umar — bir odamning 30 kunlik tarixi\n"
         "• /davomat 18:30 22:30 — oraliq\n"
@@ -160,6 +181,34 @@ async def hisobot_cmd(update, ctx):
     if not _ruxsat(update.effective_user.id):
         return
     await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
+
+
+def _jadval_rasmi(sana=None):
+    """Kunlik davomat rasmi (BytesIO) yoki None."""
+    if not jadval:
+        return None
+    lst = db.kunlik_xulosa(sana)
+    if not lst:
+        return None
+    odamlar = [{"ism": o["ism"], "kirish": o["kirish"], "chiqish": o["chiqish"],
+                "ish": _ish_qisqa(o["ish"])} for o in lst]
+    keldi = sum(1 for o in lst if o["kirish"])
+    ketdi = sum(1 for o in lst if o["chiqish"])
+    try:
+        return jadval.jadval_rasm(str(sana or db.today_tk()), odamlar, keldi, ketdi)
+    except Exception:
+        log.exception("jadval rasm")
+        return None
+
+
+async def jadval_cmd(update, ctx):
+    if not _ruxsat(update.effective_user.id):
+        return
+    buf = _jadval_rasmi()
+    if buf:
+        await update.message.reply_photo(photo=buf, caption=f"📋 Davomat — {db.today_tk()}")
+    else:
+        await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
 async def davomat_cmd(update, ctx):
@@ -267,6 +316,17 @@ async def hisobot_loop(app):
                 await _yubor(app, _ketish_matn()); yubor["ket"] = kun
             if n.hour == 22 and n.minute == 0 and yubor["umum"] != kun:
                 await _yubor(app, "🌙 " + _xulosa_matn()); yubor["umum"] = kun
+                # rasm jadval ham
+                buf = _jadval_rasmi()
+                if buf:
+                    data = buf.getvalue()
+                    for uid in _qabul_royxati():
+                        try:
+                            import io as _io
+                            await app.bot.send_photo(uid, photo=_io.BytesIO(data),
+                                                     caption=f"📋 Kunlik davomat — {db.today_tk()}")
+                        except Exception:
+                            pass
         except Exception:
             log.exception("hisobot_loop")
         await asyncio.sleep(30)
@@ -282,6 +342,7 @@ async def run():
     app.add_handler(CommandHandler("kelish", kelish_cmd))
     app.add_handler(CommandHandler("ketish", ketish_cmd))
     app.add_handler(CommandHandler("hisobot", hisobot_cmd))
+    app.add_handler(CommandHandler("jadval", jadval_cmd))
     app.add_handler(CommandHandler("odam", odam_cmd))
     app.add_handler(CommandHandler("oy", oy_cmd))
     app.add_handler(CommandHandler("davomat", davomat_cmd))
