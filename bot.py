@@ -20,8 +20,8 @@ JONLI_SOAT = int(os.environ.get("JONLI_SOAT", "21"))
 
 
 # ---------- Matn tayyorlash ----------
-def _kelish_matn(sana=None):
-    lst = [o for o in db.kunlik_xulosa(sana) if o["kirish"]]
+def _kelish_matn(sana=None, baza=None):
+    lst = [o for o in (baza if baza is not None else db.kunlik_xulosa(sana)) if o["kirish"]]
     lst.sort(key=lambda x: x["kirish"])
     if not lst:
         return "🌅 *Kelish* — hali hech kim kelmadi."
@@ -32,8 +32,8 @@ def _kelish_matn(sana=None):
     return "\n".join(q)
 
 
-def _ketish_matn(sana=None):
-    lst = [o for o in db.kunlik_xulosa(sana) if o["chiqish"]]
+def _ketish_matn(sana=None, baza=None):
+    lst = [o for o in (baza if baza is not None else db.kunlik_xulosa(sana)) if o["chiqish"]]
     lst.sort(key=lambda x: x["chiqish"])
     if not lst:
         return "🌆 *Ketish* — hali hech kim ketmadi."
@@ -51,8 +51,8 @@ def _ish_qisqa(ish):
     return ish.replace(" ", "").replace("daq", "")
 
 
-def _xulosa_matn(sana=None):
-    lst = db.kunlik_xulosa(sana)
+def _xulosa_matn(sana=None, baza=None):
+    lst = baza if baza is not None else db.kunlik_xulosa(sana)
     if not lst:
         return "📋 Bugun hech kim qayd etilmadi."
     d = str(sana or db.today_tk())[:10]
@@ -183,11 +183,11 @@ async def hisobot_cmd(update, ctx):
     await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
-def _jadval_rasmi(sana=None):
+def _jadval_rasmi(sana=None, baza=None):
     """Kunlik davomat rasmi (BytesIO) yoki None."""
     if not jadval:
         return None
-    lst = db.kunlik_xulosa(sana)
+    lst = baza if baza is not None else db.kunlik_xulosa(sana)
     if not lst:
         return None
     odamlar = [{"ism": o["ism"], "kirish": o["kirish"], "chiqish": o["chiqish"],
@@ -209,6 +209,94 @@ async def jadval_cmd(update, ctx):
         await update.message.reply_photo(photo=buf, caption=f"📋 Davomat — {db.today_tk()}")
     else:
         await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
+
+
+# ---------- Haydovchilar guruhi ----------
+def _hayd_qabul():
+    """Haydovchi jadvali boradigan ID lar (sozlamadan)."""
+    xom = db.get_sozlama("haydovchi_qabul") or ""
+    idlar = set()
+    for p in xom.replace(" ", "").split(","):
+        if p.lstrip("-").isdigit():
+            idlar.add(int(p))
+    return idlar
+
+
+def _hayd_baza(sana=None):
+    return [o for o in db.kunlik_xulosa(sana) if db.is_haydovchi(o["ism"])]
+
+
+async def haydovchi_qosh_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    ism = " ".join(ctx.args or []).strip()
+    if not ism:
+        ro = db.ismlar(30)
+        await update.message.reply_text(
+            "🚚 Qo'shish: `/haydovchi_qosh Umar`\n\nMavjud ismlar: " + (", ".join(ro) if ro else "—"),
+            parse_mode=ParseMode.MARKDOWN)
+        return
+    db.haydovchi_qosh(ism)
+    await update.message.reply_text(f"✅ Haydovchi qo'shildi: *{ism}*", parse_mode=ParseMode.MARKDOWN)
+
+
+async def haydovchi_ochir_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    ism = " ".join(ctx.args or []).strip()
+    if not ism:
+        await update.message.reply_text("O'chirish: `/haydovchi_ochir Umar`", parse_mode=ParseMode.MARKDOWN)
+        return
+    n = db.haydovchi_ochir(ism)
+    await update.message.reply_text("✅ O'chirildi." if n else "❌ Bunday haydovchi yo'q.")
+
+
+async def haydovchi_id_cmd(update, ctx):
+    if update.effective_user.id != OWNER_ID:
+        return
+    args = ctx.args or []
+    if not args:
+        joriy = db.get_sozlama("haydovchi_qabul") or "—"
+        await update.message.reply_text(
+            f"🚚 Haydovchi jadvali boradigan ID: `{joriy}`\n\n"
+            "O'rnatish: `/haydovchi_id 123456789`\n"
+            "_(Bir nechta bo'lsa vergul bilan: 111,222)_", parse_mode=ParseMode.MARKDOWN)
+        return
+    db.set_sozlama("haydovchi_qabul", ",".join(args))
+    await update.message.reply_text(f"✅ Haydovchi jadvali boradigan ID: `{','.join(args)}`",
+                                    parse_mode=ParseMode.MARKDOWN)
+
+
+async def haydovchilar_cmd(update, ctx):
+    if not _ruxsat(update.effective_user.id):
+        return
+    ro = db.haydovchi_royxat()
+    if not ro:
+        await update.message.reply_text(
+            "🚚 Hali haydovchi belgilanmagan.\n\nQo'shish: `/haydovchi_qosh Umar`",
+            parse_mode=ParseMode.MARKDOWN)
+        return
+    baza = _hayd_baza()
+    buf = _jadval_rasmi(baza=baza) if baza else None
+    if buf:
+        await update.message.reply_photo(photo=buf, caption=f"🚚 Haydovchilar davomati — {db.today_tk()}")
+    else:
+        await update.message.reply_text("🚚 *Haydovchilar:* " + ", ".join(ro) +
+                                        "\n\nBugun hali qayd yo'q.", parse_mode=ParseMode.MARKDOWN)
+
+
+async def _hayd_yubor_rasm(app, baza, caption):
+    """Haydovchi rasmini haydovchi qabul ID lariga yuboradi."""
+    buf = _jadval_rasmi(baza=baza)
+    if not buf:
+        return
+    data = buf.getvalue()
+    import io as _io
+    for uid in _hayd_qabul():
+        try:
+            await app.bot.send_photo(uid, photo=_io.BytesIO(data), caption=caption)
+        except Exception:
+            pass
 
 
 async def davomat_cmd(update, ctx):
@@ -284,6 +372,28 @@ async def _odam_javob(update, ctx, kunlar):
                                         parse_mode=ParseMode.MARKDOWN)
         return
     aniq = mos[0] if mos else ism
+    # Rasm jadval
+    tarix = db.odam_tarix(aniq, kunlar)
+    if jadval and tarix:
+        oy = ["yan", "fev", "mar", "apr", "may", "iyn", "iyl", "avg", "sen", "okt", "noy", "dek"]
+        satlar = []
+        for t in tarix:
+            try:
+                y, m, dd = t["sana"].split("-")
+                sm = f"{int(dd)}-{oy[int(m)-1]}"
+            except Exception:
+                sm = t["sana"]
+            satlar.append({"sana": sm, "kirish": t["kirish"], "chiqish": t["chiqish"],
+                           "ish": _ish_qisqa(t["ish"])})
+        kun_soni = sum(1 for t in tarix if t["kirish"])
+        try:
+            buf = jadval.jadval_odam_rasm(aniq, satlar, kun_soni)
+            await update.message.reply_photo(photo=buf,
+                                             caption=f"👤 {aniq} — oxirgi {kunlar} kun")
+            return
+        except Exception:
+            log.exception("odam rasm")
+    # zaxira: matn
     await update.message.reply_text(_odam_tarix_matn(aniq, kunlar), parse_mode=ParseMode.MARKDOWN)
 
 
@@ -312,8 +422,34 @@ async def hisobot_loop(app):
             kun = n.strftime("%Y-%m-%d")
             if n.hour == 11 and n.minute == 0 and yubor["kel"] != kun:
                 await _yubor(app, _kelish_matn()); yubor["kel"] = kun
+                # 11:00 da rasm jadval ham (owner + boshliqlar)
+                buf = _jadval_rasmi()
+                if buf:
+                    data = buf.getvalue()
+                    import io as _io
+                    for uid in _qabul_royxati():
+                        try:
+                            await app.bot.send_photo(uid, photo=_io.BytesIO(data),
+                                                     caption=f"🌅 Kelish jadvali — {db.today_tk()}")
+                        except Exception:
+                            pass
+                hb = _hayd_baza()
+                if hb and _hayd_qabul():
+                    for uid in _hayd_qabul():
+                        try:
+                            await app.bot.send_message(uid, "🚚 " + _kelish_matn(baza=hb), parse_mode=ParseMode.MARKDOWN)
+                        except Exception:
+                            pass
+                    await _hayd_yubor_rasm(app, hb, f"🚚 Haydovchilar — kelish {db.today_tk()}")
             if n.hour == 21 and n.minute == 0 and yubor["ket"] != kun:
                 await _yubor(app, _ketish_matn()); yubor["ket"] = kun
+                hb = _hayd_baza()
+                if hb and _hayd_qabul():
+                    for uid in _hayd_qabul():
+                        try:
+                            await app.bot.send_message(uid, "🚚 " + _ketish_matn(baza=hb), parse_mode=ParseMode.MARKDOWN)
+                        except Exception:
+                            pass
             if n.hour == 22 and n.minute == 0 and yubor["umum"] != kun:
                 await _yubor(app, "🌙 " + _xulosa_matn()); yubor["umum"] = kun
                 # rasm jadval ham
@@ -327,6 +463,15 @@ async def hisobot_loop(app):
                                                      caption=f"📋 Kunlik davomat — {db.today_tk()}")
                         except Exception:
                             pass
+                # Haydovchilar alohida jadvali
+                hb = _hayd_baza()
+                if hb and _hayd_qabul():
+                    for uid in _hayd_qabul():
+                        try:
+                            await app.bot.send_message(uid, "🚚 " + _xulosa_matn(baza=hb), parse_mode=ParseMode.MARKDOWN)
+                        except Exception:
+                            pass
+                    await _hayd_yubor_rasm(app, hb, f"🚚 Haydovchilar davomati — {db.today_tk()}")
         except Exception:
             log.exception("hisobot_loop")
         await asyncio.sleep(30)
@@ -343,6 +488,10 @@ async def run():
     app.add_handler(CommandHandler("ketish", ketish_cmd))
     app.add_handler(CommandHandler("hisobot", hisobot_cmd))
     app.add_handler(CommandHandler("jadval", jadval_cmd))
+    app.add_handler(CommandHandler("haydovchilar", haydovchilar_cmd))
+    app.add_handler(CommandHandler("haydovchi_qosh", haydovchi_qosh_cmd))
+    app.add_handler(CommandHandler("haydovchi_ochir", haydovchi_ochir_cmd))
+    app.add_handler(CommandHandler("haydovchi_id", haydovchi_id_cmd))
     app.add_handler(CommandHandler("odam", odam_cmd))
     app.add_handler(CommandHandler("oy", oy_cmd))
     app.add_handler(CommandHandler("davomat", davomat_cmd))
