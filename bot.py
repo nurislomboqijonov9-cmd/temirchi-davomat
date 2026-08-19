@@ -1,8 +1,8 @@
 import os, re, asyncio, logging
 from aiohttp import web
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 import db, server
 try:
     import jadval
@@ -114,8 +114,9 @@ async def start_cmd(update, ctx):
         "• /ketish — kim nechada ketdi\n"
         "• /hisobot — to'liq: keldi–ketdi (+ ish soati)\n"
         "• /jadval — chiroyli rasm jadval 📊\n"
-        "• /odam Umar — bir odamning 7 kunlik tarixi\n"
+        "• /odam Umar — bir odamning tarixi (📅 hafta/oy tugma)\n"
         "• /oy Umar — bir odamning 30 kunlik tarixi\n"
+        "• /hisobot 18.08.26 — istalgan kun jadvali\n"
         "• /davomat 18:30 22:30 — oraliq\n"
         "• /bugun — barcha kirish/chiqishlar\n\n"
         "👤 *Boshliq qo'shish (faqat ega):*\n"
@@ -177,10 +178,35 @@ async def ketish_cmd(update, ctx):
     await update.message.reply_text(_ketish_matn(), parse_mode=ParseMode.MARKDOWN)
 
 
+def _sana_parse(s):
+    """'18.08.26', '18.08.2026', '2026-08-18' -> 'YYYY-MM-DD' yoki None."""
+    s = (s or "").strip()
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', s)
+    if m:
+        y, mo, d = m.groups()
+        return f"{int(y):04d}-{int(mo):02d}-{int(d):02d}"
+    m = re.match(r'^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{2,4})$', s)
+    if m:
+        d, mo, y = m.groups()
+        y = int(y)
+        if y < 100:
+            y += 2000
+        return f"{y:04d}-{int(mo):02d}-{int(d):02d}"
+    return None
+
+
 async def hisobot_cmd(update, ctx):
     if not _ruxsat(update.effective_user.id):
         return
-    await update.message.reply_text(_xulosa_matn(), parse_mode=ParseMode.MARKDOWN)
+    args = ctx.args or []
+    sana = _sana_parse(args[0]) if args else None
+    buf = _jadval_rasmi(sana=sana)
+    cap = f"📋 Davomat — {sana or db.today_tk()}"
+    if buf:
+        await update.message.reply_photo(photo=buf, caption=cap)
+        await update.message.reply_text(_xulosa_matn(sana), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await update.message.reply_text(_xulosa_matn(sana), parse_mode=ParseMode.MARKDOWN)
 
 
 def _jadval_rasmi(sana=None, baza=None):
@@ -347,14 +373,71 @@ def _odam_tarix_matn(ism, kunlar):
 async def odam_cmd(update, ctx):
     if not _ruxsat(update.effective_user.id):
         return
-    ctx.chat_data["_kunlar"] = 7
-    await _odam_javob(update, ctx, 7)
+    ism = " ".join(ctx.args or []).strip()
+    if not ism:
+        ro = db.ismlar(30)
+        matn = "👤 *Kimning davomati?*\n\nMasalan: `/odam Umar`\n\n"
+        if ro:
+            matn += "Ismlar: " + ", ".join(ro)
+        await update.message.reply_text(matn, parse_mode=ParseMode.MARKDOWN)
+        return
+    mos = db.odam_topilsin(ism)
+    if len(mos) > 1 and ism.lower() not in [m.lower() for m in mos]:
+        await update.message.reply_text("👥 Bir nechta mos keldi: " + ", ".join(mos) + "\nAniqroq yozing.",
+                                        parse_mode=ParseMode.MARKDOWN)
+        return
+    aniq = mos[0] if mos else ism
+    ctx.user_data["odam_ism"] = aniq
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📅 1 haftalik", callback_data="od:7"),
+        InlineKeyboardButton("📅 1 oylik", callback_data="od:30")]])
+    await update.message.reply_text(f"👤 *{aniq}* — qaysi davr?", parse_mode=ParseMode.MARKDOWN, reply_markup=kb)
 
 
 async def oy_cmd(update, ctx):
     if not _ruxsat(update.effective_user.id):
         return
     await _odam_javob(update, ctx, 30)
+
+
+async def odam_davr_cb(update, ctx):
+    q = update.callback_query
+    await q.answer()
+    if not _ruxsat(q.from_user.id):
+        return
+    try:
+        kunlar = int(q.data.split(":")[1])
+    except Exception:
+        kunlar = 7
+    aniq = ctx.user_data.get("odam_ism")
+    if not aniq:
+        await q.edit_message_text("Ismni qayta yozing: /odam Umar")
+        return
+    await _odam_chiqar(q.message.chat_id, ctx, aniq, kunlar)
+
+
+async def _odam_chiqar(chat_id, ctx, aniq, kunlar):
+    """Xodim davomatini rasm (yoki matn) qilib yuboradi."""
+    tarix = db.odam_tarix(aniq, kunlar)
+    if jadval and tarix:
+        oy = ["yan", "fev", "mar", "apr", "may", "iyn", "iyl", "avg", "sen", "okt", "noy", "dek"]
+        satlar = []
+        for t in tarix:
+            try:
+                y, m, dd = t["sana"].split("-")
+                sm = f"{int(dd)}-{oy[int(m)-1]}"
+            except Exception:
+                sm = t["sana"]
+            satlar.append({"sana": sm, "kirish": t["kirish"], "chiqish": t["chiqish"],
+                           "ish": _ish_qisqa(t["ish"])})
+        kun_soni = sum(1 for t in tarix if t["kirish"])
+        try:
+            buf = jadval.jadval_odam_rasm(aniq, satlar, kun_soni)
+            await ctx.bot.send_photo(chat_id, photo=buf, caption=f"👤 {aniq} — oxirgi {kunlar} kun")
+            return
+        except Exception:
+            log.exception("odam rasm")
+    await ctx.bot.send_message(chat_id, _odam_tarix_matn(aniq, kunlar), parse_mode=ParseMode.MARKDOWN)
 
 
 async def _odam_javob(update, ctx, kunlar):
@@ -372,29 +455,8 @@ async def _odam_javob(update, ctx, kunlar):
                                         parse_mode=ParseMode.MARKDOWN)
         return
     aniq = mos[0] if mos else ism
-    # Rasm jadval
-    tarix = db.odam_tarix(aniq, kunlar)
-    if jadval and tarix:
-        oy = ["yan", "fev", "mar", "apr", "may", "iyn", "iyl", "avg", "sen", "okt", "noy", "dek"]
-        satlar = []
-        for t in tarix:
-            try:
-                y, m, dd = t["sana"].split("-")
-                sm = f"{int(dd)}-{oy[int(m)-1]}"
-            except Exception:
-                sm = t["sana"]
-            satlar.append({"sana": sm, "kirish": t["kirish"], "chiqish": t["chiqish"],
-                           "ish": _ish_qisqa(t["ish"])})
-        kun_soni = sum(1 for t in tarix if t["kirish"])
-        try:
-            buf = jadval.jadval_odam_rasm(aniq, satlar, kun_soni)
-            await update.message.reply_photo(photo=buf,
-                                             caption=f"👤 {aniq} — oxirgi {kunlar} kun")
-            return
-        except Exception:
-            log.exception("odam rasm")
-    # zaxira: matn
-    await update.message.reply_text(_odam_tarix_matn(aniq, kunlar), parse_mode=ParseMode.MARKDOWN)
+    ctx.user_data["odam_ism"] = aniq
+    await _odam_chiqar(update.message.chat_id, ctx, aniq, kunlar)
 
 
 async def bugun_cmd(update, ctx):
@@ -494,6 +556,7 @@ async def run():
     app.add_handler(CommandHandler("haydovchi_id", haydovchi_id_cmd))
     app.add_handler(CommandHandler("odam", odam_cmd))
     app.add_handler(CommandHandler("oy", oy_cmd))
+    app.add_handler(CallbackQueryHandler(odam_davr_cb, pattern=r"^od:"))
     app.add_handler(CommandHandler("davomat", davomat_cmd))
     app.add_handler(CommandHandler("bugun", bugun_cmd))
 
