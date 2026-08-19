@@ -14,8 +14,12 @@ TX = (30, 41, 59)
 MUT = (120, 135, 155)
 
 
+import os as _os
+_BU = _os.path.dirname(_os.path.abspath(__file__))
+
 def _font(size, bold=False):
     yollar = [
+        _os.path.join(_BU, "DejaVuSans-Bold.ttf") if bold else _os.path.join(_BU, "DejaVuSans.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ]
