@@ -100,8 +100,9 @@ def _vaqt_tk(iso):
         return db.now_tk().replace(tzinfo=None).isoformat()[:19]
 
 
-def make_web_app(xabar_cb=None):
-    """xabar_cb(matn) -> egaga Telegram xabar yuborish uchun (ixtiyoriy)."""
+def make_web_app(xabar_cb=None, sync_cb=None):
+    """xabar_cb(matn) -> egaga Telegram xabar.
+    sync_cb(dates) -> o'tgan kunlar to'ldirilganda hisobot yuborish (ixtiyoriy)."""
     app = web.Application(client_max_size=20 * 1024 * 1024)
 
     async def health(request):
@@ -143,6 +144,44 @@ def make_web_app(xabar_cb=None):
                 pass
         return web.Response(text="ok")
 
+    async def sync(request):
+        """Mahalliy agent uzilishdan keyin tushib qolgan hodisalarni shu yerga yuboradi.
+        Body: {"events":[{ism|name, emp, tur, vaqt|time, ip?}, ...]}  (yoki shunchaki ro'yxat)."""
+        kalit = os.environ.get("SYNC_KEY")
+        if kalit and request.query.get("k") != kalit and request.headers.get("X-Key") != kalit:
+            return web.json_response({"xato": "ruxsat yo'q"}, status=403)
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"xato": "json kerak"}, status=400)
+        xom = body.get("events") if isinstance(body, dict) else body
+        clean = []
+        for e in (xom or []):
+            if not isinstance(e, dict):
+                continue
+            ism = (e.get("ism") or e.get("name") or "").strip()
+            emp = e.get("emp") or e.get("employeeNoString") or e.get("employeeNo")
+            tur = e.get("tur")
+            if not tur:
+                _ip = str(e.get("ip") or "")
+                tur = "chiqish" if _ip.endswith(".11") else "kirish"
+            vaqt = _vaqt_tk(e.get("vaqt") or e.get("time"))
+            if not ism and emp:
+                ism = f"ID{emp}"
+            if not ism:
+                continue
+            clean.append({"ism": ism, "emp": emp, "tur": tur, "vaqt": vaqt, "ip": e.get("ip")})
+        res = db.hodisa_sync(clean)
+        # O'tgan kunlar to'ldirilsa — sanasi bilan hisobot
+        bugun = str(db.today_tk())
+        otgan = [d for d in res.get("dates", []) if d != bugun]
+        if otgan and res.get("new") and sync_cb:
+            try:
+                await sync_cb(otgan)
+            except Exception:
+                pass
+        return web.json_response(res)
+
     async def raw(request):
         """Diagnostika: oxirgi hodisalar (xom event bilan)."""
         rows = db.oxirgi_raw(15)
@@ -171,6 +210,7 @@ def make_web_app(xabar_cb=None):
     app.router.add_post("/kirish", event)
     app.router.add_get("/chiqish", event)
     app.router.add_post("/chiqish", event)
+    app.router.add_post("/sync", sync)
     app.router.add_get("/raw", raw)
     app.router.add_get("/api/tv", api_tv)
     return app

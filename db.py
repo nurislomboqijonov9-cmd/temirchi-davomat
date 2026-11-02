@@ -92,6 +92,34 @@ def hodisa_qosh(ism, emp, tur, vaqt=None, ip=None, raw=None):
     return {"id": rid, "ism": ism, "tur": tur, "vaqt": v}
 
 
+def hodisa_sync(events):
+    """Mahalliy agent orqali to'ldirish (internet uzilganda tushib qolgan hodisalar).
+    (ism, tur, vaqt) aynan bir xil bo'lsa — takror yozilmaydi (idempotent).
+    events: [{ism, emp, tur, vaqt('YYYY-MM-DDTHH:MM:SS'), ip?}].
+    Qaytadi: {'new': n, 'dates': [sana...]}."""
+    con = _con()
+    yangi = 0
+    sanalar = set()
+    for e in (events or []):
+        ism = (e.get("ism") or "").strip()
+        tur = e.get("tur")
+        tur = "chiqish" if str(tur).startswith("chiq") else "kirish"
+        vaqt = str(e.get("vaqt") or "")[:19]
+        if not ism or len(vaqt) < 16:
+            continue
+        bor = con.execute("SELECT 1 FROM hodisalar WHERE ism=? AND tur=? AND vaqt=?",
+                          (ism, tur, vaqt)).fetchone()
+        if bor:
+            continue
+        con.execute("INSERT INTO hodisalar(ism,emp,tur,vaqt,ip,raw,created) VALUES(?,?,?,?,?,?,?)",
+                    (ism, e.get("emp"), tur, vaqt, e.get("ip"), "(sync)", now_tk().isoformat()))
+        yangi += 1
+        sanalar.add(vaqt[:10])
+    con.commit()
+    con.close()
+    return {"new": yangi, "dates": sorted(sanalar)}
+
+
 def bugungi(sana=None):
     d = str(sana or today_tk())[:10]
     con = _con()

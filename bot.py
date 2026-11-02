@@ -569,7 +569,25 @@ async def run():
                 except Exception:
                     pass
 
-    webapp = server.make_web_app(xabar_cb)
+    async def sync_cb(dates):
+        """O'tgan kun(lar) to'ldirilganda — sanasi bilan hisobot (owner + boshliqlar)."""
+        import io as _io
+        for sana in dates:
+            matn = (f"📅 *To'ldirildi — {sana}*\n"
+                    "_(internet uzilgan paytda tushib qolgan davomat qo'shildi)_\n\n"
+                    + _xulosa_matn(sana))
+            buf = _jadval_rasmi(sana=sana)
+            data = buf.getvalue() if buf else None
+            for uid in _qabul_royxati():
+                try:
+                    await app.bot.send_message(uid, matn, parse_mode=ParseMode.MARKDOWN)
+                    if data:
+                        await app.bot.send_photo(uid, photo=_io.BytesIO(data),
+                                                 caption=f"📋 {sana} — to'ldirilgan davomat")
+                except Exception:
+                    pass
+
+    webapp = server.make_web_app(xabar_cb, sync_cb)
     runner = web.AppRunner(webapp)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
